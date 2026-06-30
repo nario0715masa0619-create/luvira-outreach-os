@@ -1,22 +1,141 @@
 # main-ingest-and-run 実ノード構成案 v1
 
 ## 概要
-この文書は、luvira-outreach-os の親ワークフロー `main-ingest-and-run` を n8n 上で最初に実装するための実ノード構成案である。
 
-MVP v1 では、CSV主導の実行を前提にしつつ、Webhook入口にも将来的に対応できるように構成する。
-ただし初期実装では、Manual Trigger + Set ノードによるダミーデータ投入で end-to-end を確認しながら進める。
+この文書は、luvira-outreach-os の parent workflow `main-ingest-and-run` を n8n 上で実装するための実ノード構成案である。
+
+この workflow の目的は、入力データの受け取りから、target 正規化、実行対象判定、チャネル振り分け、送信実行、結果更新、KPI 集計、最終出力までを統括することである。
+
+MVP v1 では、parent workflow は orchestration に徹し、実処理の大半は sub-workflow に委譲する。
+
+---
+
+## 役割
+
+- 実行入口を受け持つ
+- 実行コンテキストを作る
+- 正規化 sub-workflow を呼ぶ
+- target validation を呼ぶ
+- channel routing を呼ぶ
+- email / form 送信 sub-workflow を呼ぶ
+- channel result 更新を呼ぶ
+- KPI 集計を呼ぶ
+- 出力 router を呼ぶ
+- 最終 execution summary を作る
 
 ---
 
 ## 実装方針
 
-- 最初は Manual Trigger で動く形を作る
-- 入口データは Set ノードでダミー投入できるようにする
-- parent workflow は orchestration に徹する
-- 実処理は sub-workflow 側に寄せる
-- logging と output は分離する
-- エラー処理は error-handler workflow に委譲する
-- main workflow では validation error を早期に止める
+- parent workflow は `Execute Workflow` による sub-workflow 呼び出しを中核にする
+- child 側は `Execute Sub-workflow Trigger` を入口にし、初期は `Accept all data` で受ける
+- 実処理のロジックは parent に寄せすぎない
+- parent では schema を束ね、sub-workflow 間の受け渡しを整理する
+- email と form は routing 後に別 sub-workflow として実行する
+- 実行順序は同期的に進め、各 sub-workflow の返却値を次段へ渡す
+- エラー時は n8n の error workflow と `Stop And Error` を併用する
+
+---
+
+## workflow 全体像
+
+```text
+input
+  -> build execution context
+  -> sub-csv-normalizer
+  -> sub-target-validator
+  -> sub-channel-router
+     -> sub-email-outreach
+     -> sub-form-outreach
+  -> sub-channel-result-updater
+  -> sub-kpi-aggregator
+  -> sub-log-output-router
+  -> build final execution summary
+```
+
+---
+
+## 想定入力
+
+### パターンA: Webhook 起点
+```json
+{
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "input_type": "json",
+  "targets": [
+    {
+      "company_name": "Example Inc.",
+      "email": "test@example.com",
+      "contact_name": "Yamada",
+      "channel_hint": "email"
+    }
+  ]
+}
+```
+
+### パターンB: CSV 読み込み後の配列起点
+```json
+{
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "input_type": "csv_rows",
+  "rows": [
+    {
+      "company_name": "Example Inc.",
+      "email": "test@example.com",
+      "contact_name": "Yamada",
+      "channel_hint": "email"
+    }
+  ]
+}
+```
+
+---
+
+## 想定出力
+
+```json
+{
+  "execution_id": "ex_001",
+  "output_status": "success",
+  "adapter_results": [
+    {
+      "adapter": "google_sheets",
+      "dataset": "activity_logs",
+      "write_status": "success",
+      "record_count": 10
+    },
+    {
+      "adapter": "google_sheets",
+      "dataset": "kpi_snapshots",
+      "write_status": "success",
+      "record_count": 1
+    }
+  ],
+  "execution_summary": {
+    "processed_targets": 10,
+    "sent_count": 7,
+    "failed_count": 2,
+    "excluded_count": 1
+  }
+}
+```
+
+---
+
+## 呼び出す sub-workflow
+
+| Workflow | 役割 |
+|---|---|
+| `sub-csv-normalizer` | 入力行の標準 schema 化 |
+| `sub-target-validator` | 実行対象妥当性判定 |
+| `sub-channel-router` | email / form / excluded 分岐 |
+| `sub-email-outreach` | email 送信 |
+| `sub-form-outreach` | form 送信 |
+| `sub-channel-result-updater` | latest channel result 更新 |
+| `sub-kpi-aggregator` | execution 単位 KPI 集計 |
+| `sub-log-output-router` | activity logs / KPI の保存 |
 
 ---
 
@@ -24,425 +143,631 @@ MVP v1 では、CSV主導の実行を前提にしつつ、Webhook入口にも将
 
 | No | Node Name | Node Type | 役割 |
 |---|---|---|---|
-| 1 | Manual Trigger | Manual Trigger | 手動テスト起動 |
-| 2 | Set Input Payload | Set | テスト用入力データ生成 |
-| 3 | Validate Entry Payload | IF | 必須入力チェック |
-| 4 | Stop Invalid Input | Stop And Error | 必須入力不足時に停止 |
-| 5 | Set Execution Context | Set | execution_id 等の実行文脈生成 |
-| 6 | Call sub-csv-normalizer | Execute Workflow | CSV正規化 sub-workflow 呼び出し |
-| 7 | Call sub-target-validator | Execute Workflow | 対象判定 sub-workflow 呼び出し |
-| 8 | Call sub-channel-router | Execute Workflow | チャネル分岐 sub-workflow 呼び出し |
-| 9 | Has Email Targets? | IF | email 対象有無判定 |
-| 10 | Call sub-email-outreach | Execute Workflow | メール営業 sub-workflow 呼び出し |
-| 11 | Has Form Targets? | IF | form 対象有無判定 |
-| 12 | Call sub-form-outreach | Execute Workflow | フォーム営業 sub-workflow 呼び出し |
-| 13 | Merge Channel Results | Merge | email / form 結果統合 |
-| 14 | Call sub-channel-result-updater | Execute Workflow | 最新状態更新 |
-| 15 | Call sub-kpi-aggregator | Execute Workflow | KPI集計 |
-| 16 | Call sub-log-output-router | Execute Workflow | 出力先ルーティング |
-| 17 | Set Final Execution Status | Set | 実行完了データ生成 |
-| 18 | Return Summary | No Op / last node | 最終出力 |
+| 1 | Start / Trigger | Manual Trigger / Webhook / Schedule | 実行開始 |
+| 2 | Validate Root Input | IF | 最低限の入力確認 |
+| 3 | Stop Missing Root Input | Stop And Error | 必須入力不足で停止 |
+| 4 | Build Execution Context | Set | execution context 生成 |
+| 5 | Execute sub-csv-normalizer | Execute Workflow | 正規化 |
+| 6 | Validate Normalized Targets | IF | 正規化結果確認 |
+| 7 | Stop Missing Normalized Targets | Stop And Error | 正規化失敗時停止 |
+| 8 | Execute sub-target-validator | Execute Workflow | 対象妥当性判定 |
+| 9 | Execute sub-channel-router | Execute Workflow | チャネル分岐 |
+| 10 | Has Email Targets? | IF | email 対象有無判定 |
+| 11 | Execute sub-email-outreach | Execute Workflow | email 送信 |
+| 12 | Build Empty Email Result | Set | email 対象なし時の空結果 |
+| 13 | Has Form Targets? | IF | form 対象有無判定 |
+| 14 | Execute sub-form-outreach | Execute Workflow | form 送信 |
+| 15 | Build Empty Form Result | Set | form 対象なし時の空結果 |
+| 16 | Merge Outreach Results | Merge / Code | email と form の結果統合 |
+| 17 | Execute sub-channel-result-updater | Execute Workflow | channel result 更新 |
+| 18 | Execute sub-kpi-aggregator | Execute Workflow | KPI 集計 |
+| 19 | Build Output Payload | Set | 出力 router 用 payload 整形 |
+| 20 | Execute sub-log-output-router | Execute Workflow | 最終出力保存 |
+| 21 | Build Final Execution Summary | Set / Code | 最終 summary 作成 |
+| 22 | Return Final Result | Set / Respond | 最終返却 |
 
 ---
 
-## 初期入力ノード設計
+## 各ノード詳細
 
-### 1. Manual Trigger
-最初の実装では Manual Trigger を使用する。
-本ノードはエディタ上で `Execute Workflow` を押したときだけ実行される。
+### 1. Start / Trigger
+入口ノード。
 
-#### 用途
-- 実装初期のテスト
-- sub-workflow 接続確認
-- ダミーデータ検証
+#### 候補
+- Manual Trigger
+- Webhook
+- Schedule Trigger
 
----
-
-### 2. Set Input Payload
-Manual Trigger の直後に置き、テスト用 payload を作る。
-
-#### 設定例
-```json
-{
-  "customer_id": "cust_001",
-  "source_type": "csv_upload",
-  "run_mode": "both",
-  "source_list_name": "tokyo_saas_list_2026_06",
-  "settings_version": "v1",
-  "raw_rows": [
-    {
-      "company": "Example Inc.",
-      "email": "info@example.com",
-      "website": "https://example.com",
-      "form": "https://example.com/contact"
-    },
-    {
-      "company": "Demo LLC",
-      "email": "",
-      "website": "https://demo.jp",
-      "form": "https://demo.jp/contact"
-    }
-  ]
-}
-```
-
-#### ポイント
-- raw_rows は配列のまま渡す
-- 将来は CSV Parse 結果や Webhook payload に置き換える
-- まずは1〜3件程度で動作確認する
+#### MVP v1 推奨
+- 初期は Manual Trigger または Webhook
+- 定期処理は後から追加
 
 ---
 
-## 入力検証ノード
+### 2. Validate Root Input
+IF ノードで最低限の入力を確認する。
 
-### 3. Validate Entry Payload
-IF ノードで以下をチェックする。
-
-#### 判定条件
-- `customer_id` が空でない
-- `run_mode` が `email` / `form` / `both` のいずれか
-- `raw_rows` が配列で1件以上
+#### 条件候補
+- `customer_id` が存在する
+- `source_list_id` が存在する
+- `targets` または `rows` のどちらかが存在する
 
 #### true
-- 次へ進む
+- `Build Execution Context` へ進む
 
 #### false
-- Stop Invalid Input へ進む
+- `Stop Missing Root Input` へ進む
 
 ---
 
-### 4. Stop Invalid Input
-Stop And Error ノードで明示停止する。
+### 3. Stop Missing Root Input
+Stop And Error ノードで停止する。
 
-#### エラーメッセージ例
+#### メッセージ例
 ```text
-Invalid entry payload: customer_id, run_mode, or raw_rows is missing or invalid.
+main-ingest-and-run: customer_id, source_list_id, and input rows or targets are required.
 ```
-
-#### 意図
-- validation error を後段へ流さない
-- error-handler workflow で検知しやすくする
-- 実装中の誤入力を早く発見する
 
 ---
 
-## 実行文脈生成
+### 4. Build Execution Context
+Set ノードで親 workflow の基準 payload を作る。
 
-### 5. Set Execution Context
-ここで親 workflow 全体で引き回す共通値を作る。
-
-#### 作る項目
+#### 出力例
 ```json
 {
-  "execution_id": "ex_{{$now}}",
-  "started_at": "{{$now}}",
-  "status": "running",
-  "trigger_type": "manual",
+  "execution_id": "={{'ex_' + $now.toMillis()}}",
   "customer_id": "={{$json.customer_id}}",
-  "source_type": "={{$json.source_type}}",
-  "run_mode": "={{$json.run_mode}}",
-  "source_list_name": "={{$json.source_list_name}}",
-  "settings_version": "={{$json.settings_version}}",
-  "raw_rows": "={{$json.raw_rows}}"
+  "source_list_id": "={{$json.source_list_id}}",
+  "input_type": "={{$json.input_type || 'json'}}",
+  "rows": "={{$json.rows || []}}",
+  "targets": "={{$json.targets || []}}",
+  "output_mode": "sheets",
+  "started_at": "={{$now}}"
 }
 ```
 
-#### ポイント
-- 実装時は execution_id 生成ルールを統一する
-- `customer_id`, `run_mode`, `raw_rows` は以降ずっと保持する
+#### 補足
+- `execution_id` は親側で先に発行する
+- sub-workflow へ同じ ID を渡す
 
 ---
 
-## sub-workflow 呼び出し
+### 5. Execute sub-csv-normalizer
+`sub-csv-normalizer` を呼ぶ。
 
-### 6. Call sub-csv-normalizer
-Execute Workflow ノードで `sub-csv-normalizer` を呼び出す。
+#### 渡す想定
+- execution_id
+- customer_id
+- source_list_id
+- input_type
+- rows または targets
 
-#### 渡す入力
+#### 期待返却
 ```json
 {
-  "source_list_id": "sl_{{$now}}",
-  "raw_rows": "={{$json.raw_rows}}"
+  "targets": [...]
 }
 ```
 
-#### 期待出力
-- `targets`
+---
+
+### 6. Validate Normalized Targets
+IF ノードで正規化結果を確認する。
+
+#### 条件
+- `targets` が存在する
+
+#### true
+- `Execute sub-target-validator` へ進む
+
+#### false
+- `Stop Missing Normalized Targets` へ進む
 
 ---
 
-### 7. Call sub-target-validator
-Execute Workflow ノードで `sub-target-validator` を呼び出す。
+### 7. Stop Missing Normalized Targets
+Stop And Error ノードで停止する。
 
-#### 渡す入力
+#### メッセージ例
+```text
+main-ingest-and-run: normalized targets is missing.
+```
+
+---
+
+### 8. Execute sub-target-validator
+`sub-target-validator` を呼ぶ。
+
+#### 期待返却
 ```json
 {
-  "targets": "={{$json.targets}}"
+  "targets": [...]
 }
 ```
 
-#### 期待出力
-- `targets` with eligibility fields
+#### 役割
+- active / excluded / invalid を含む target 正規化済み状態を返す
 
 ---
 
-### 8. Call sub-channel-router
-Execute Workflow ノードで `sub-channel-router` を呼び出す。
+### 9. Execute sub-channel-router
+`sub-channel-router` を呼ぶ。
 
-#### 渡す入力
+#### 期待返却
 ```json
 {
-  "execution_id": "={{$json.execution_id}}",
-  "run_mode": "={{$json.run_mode}}",
-  "targets": "={{$json.targets}}"
+  "email_targets": [...],
+  "form_targets": [...],
+  "excluded_targets": [...]
 }
 ```
 
-#### 期待出力
-- `email_targets`
-- `form_targets`
-- `excluded_targets`
-
 ---
 
-## チャネル別分岐
-
-### 9. Has Email Targets?
-IF ノード。
+### 10. Has Email Targets?
+IF ノードで email 対象有無を判定する。
 
 #### 条件
 - `email_targets.length > 0`
 
 #### true
-- `Call sub-email-outreach` へ
+- `Execute sub-email-outreach` へ進む
 
 #### false
-- email branch をスキップ
+- `Build Empty Email Result` へ進む
 
 ---
 
-### 10. Call sub-email-outreach
-Execute Workflow ノード。
+### 11. Execute sub-email-outreach
+`sub-email-outreach` を呼ぶ。
 
-#### 渡す入力
+#### 渡す想定
 ```json
 {
-  "execution_id": "={{$json.execution_id}}",
-  "email_targets": "={{$json.email_targets}}"
+  "execution_id": "ex_001",
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "targets": [...]
 }
 ```
 
-#### 期待出力
-- `activity_logs`
-- `channel_results`
+#### 期待返却
+```json
+{
+  "channel_results": [...],
+  "activity_logs": [...]
+}
+```
 
 ---
 
-### 11. Has Form Targets?
-IF ノード。
+### 12. Build Empty Email Result
+email 対象なしの場合の空結果を返す。
+
+#### 出力例
+```json
+{
+  "channel_results": [],
+  "activity_logs": []
+}
+```
+
+---
+
+### 13. Has Form Targets?
+IF ノードで form 対象有無を判定する。
 
 #### 条件
 - `form_targets.length > 0`
 
 #### true
-- `Call sub-form-outreach` へ
+- `Execute sub-form-outreach` へ進む
 
 #### false
-- form branch をスキップ
+- `Build Empty Form Result` へ進む
 
 ---
 
-### 12. Call sub-form-outreach
-Execute Workflow ノード。
+### 14. Execute sub-form-outreach
+`sub-form-outreach` を呼ぶ。
 
-#### 渡す入力
+#### 渡す想定
 ```json
 {
-  "execution_id": "={{$json.execution_id}}",
-  "form_targets": "={{$json.form_targets}}"
+  "execution_id": "ex_001",
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "targets": [...]
 }
 ```
 
-#### 期待出力
-- `activity_logs`
-- `channel_results`
-
----
-
-## 結果統合
-
-### 13. Merge Channel Results
-Merge ノードで email branch と form branch の出力を統合する。
-
-#### 統合対象
-- activity_logs
-- channel_results
-
-#### 注意
-- branch のどちらかが空でも壊れない構成にする
-- 初期はシンプルに email / form を別々にまとめ、その後 Set ノードで整形してもよい
-
----
-
-### 14. Call sub-channel-result-updater
-Execute Workflow ノード。
-
-#### 渡す入力
+#### 期待返却
 ```json
 {
-  "execution_id": "={{$json.execution_id}}",
-  "channel_results": "={{$json.channel_results}}"
+  "channel_results": [...],
+  "activity_logs": [...]
 }
 ```
 
-#### 期待出力
-- 最新化済み `channel_results`
-
 ---
 
-### 15. Call sub-kpi-aggregator
-Execute Workflow ノード。
-
-#### 渡す入力
-```json
-{
-  "customer_id": "={{$json.customer_id}}",
-  "source_list_id": "={{$json.source_list_id}}",
-  "execution_id": "={{$json.execution_id}}",
-  "targets": "={{$json.targets}}",
-  "channel_results": "={{$json.channel_results}}",
-  "activity_logs": "={{$json.activity_logs}}"
-}
-```
-
-#### 期待出力
-- `kpi_snapshots`
-
----
-
-### 16. Call sub-log-output-router
-Execute Workflow ノード。
-
-#### 渡す入力
-```json
-{
-  "output_mode": "sheets",
-  "activity_logs": "={{$json.activity_logs}}",
-  "channel_results": "={{$json.channel_results}}",
-  "kpi_snapshots": "={{$json.kpi_snapshots}}"
-}
-```
-
-#### 期待出力
-- `output_status`
-- `adapter_results`
-
----
-
-## 実行終了処理
-
-### 17. Set Final Execution Status
-最後に execution summary を作る。
+### 15. Build Empty Form Result
+form 対象なしの場合の空結果を返す。
 
 #### 出力例
 ```json
 {
-  "execution_id": "={{$json.execution_id}}",
-  "status": "completed",
-  "processed_targets": "={{$json.targets.length}}",
-  "email_target_count": "={{$json.email_targets.length}}",
-  "form_target_count": "={{$json.form_targets.length}}",
-  "output_status": "={{$json.output_status}}",
-  "finished_at": "{{$now}}"
+  "channel_results": [],
+  "activity_logs": []
 }
 ```
 
 ---
 
-### 18. Return Summary
-最後のノード出力を親 workflow の実行結果として扱う。
+### 16. Merge Outreach Results
+email と form の返却結果を 1 つに統合する。
 
-#### 目的
-- テスト実行時に結果を見やすくする
-- 後で execution レコード保存にも使えるようにする
+#### 統合対象
+- email `channel_results`
+- form `channel_results`
+- email `activity_logs`
+- form `activity_logs`
+
+#### 出力例
+```json
+{
+  "channel_results": [
+    {
+      "target_id": "t_001",
+      "channel": "email",
+      "provider": "gmail",
+      "send_status": "sent",
+      "failure_reason": null
+    },
+    {
+      "target_id": "t_010",
+      "channel": "form",
+      "provider": "http_request",
+      "send_status": "failed",
+      "failure_reason": "form_submit_failed"
+    }
+  ],
+  "activity_logs": [
+    {
+      "target_id": "t_001",
+      "activity_type": "email_sent",
+      "activity_status": "success",
+      "detail": "gmail send completed"
+    },
+    {
+      "target_id": "t_010",
+      "activity_type": "form_submitted",
+      "activity_status": "failed",
+      "detail": "form submit failed"
+    }
+  ]
+}
+```
+
+#### 補足
+- excluded target も activity log に残したいならここで追加してもよい
+- 配列結合は Code ノードの方がわかりやすい場合がある
+
+---
+
+### 17. Execute sub-channel-result-updater
+`sub-channel-result-updater` を呼ぶ。
+
+#### 渡す想定
+```json
+{
+  "execution_id": "ex_001",
+  "channel_results": [...]
+}
+```
+
+#### 期待返却
+```json
+{
+  "channel_results": [...]
+}
+```
+
+---
+
+### 18. Execute sub-kpi-aggregator
+`sub-kpi-aggregator` を呼ぶ。
+
+#### 渡す想定
+```json
+{
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "execution_id": "ex_001",
+  "targets": [...],
+  "channel_results": [...],
+  "activity_logs": [...]
+}
+```
+
+#### 期待返却
+```json
+{
+  "execution_id": "ex_001",
+  "kpi_snapshots": [...]
+}
+```
+
+---
+
+### 19. Build Output Payload
+`sub-log-output-router` に渡す payload を整形する。
+
+#### 出力例
+```json
+{
+  "output_mode": "sheets",
+  "activity_logs": "={{$json.activity_logs || []}}",
+  "channel_results": "={{$json.channel_results || []}}",
+  "kpi_snapshots": "={{$json.kpi_snapshots || []}}"
+}
+```
+
+---
+
+### 20. Execute sub-log-output-router
+`sub-log-output-router` を呼ぶ。
+
+#### 期待返却
+```json
+{
+  "output_status": "success",
+  "adapter_results": [...]
+}
+```
+
+---
+
+### 21. Build Final Execution Summary
+Set ノードまたは Code ノードで最終 summary を作る。
+
+#### 集計例
+- processed_targets
+- sent_count
+- failed_count
+- excluded_count
+- output_status
+
+#### 出力例
+```json
+{
+  "execution_id": "ex_001",
+  "output_status": "success",
+  "adapter_results": [
+    {
+      "adapter": "google_sheets",
+      "dataset": "activity_logs",
+      "write_status": "success",
+      "record_count": 10
+    }
+  ],
+  "execution_summary": {
+    "processed_targets": 10,
+    "sent_count": 7,
+    "failed_count": 2,
+    "excluded_count": 1
+  }
+}
+```
+
+---
+
+### 22. Return Final Result
+最終返却ノード。
+
+#### 返却形式
+```json
+{
+  "execution_id": "ex_001",
+  "output_status": "success",
+  "adapter_results": [
+    {
+      "adapter": "google_sheets",
+      "dataset": "activity_logs",
+      "write_status": "success",
+      "record_count": 10
+    },
+    {
+      "adapter": "google_sheets",
+      "dataset": "kpi_snapshots",
+      "write_status": "success",
+      "record_count": 1
+    }
+  ],
+  "execution_summary": {
+    "processed_targets": 10,
+    "sent_count": 7,
+    "failed_count": 2,
+    "excluded_count": 1
+  }
+}
+```
 
 ---
 
 ## 接続順序
 
 ```text
-Manual Trigger
-  -> Set Input Payload
-  -> Validate Entry Payload
-    -> true  -> Set Execution Context
-              -> Call sub-csv-normalizer
-              -> Call sub-target-validator
-              -> Call sub-channel-router
-              -> Has Email Targets?
-                   -> true -> Call sub-email-outreach
-              -> Has Form Targets?
-                   -> true -> Call sub-form-outreach
-              -> Merge Channel Results
-              -> Call sub-channel-result-updater
-              -> Call sub-kpi-aggregator
-              -> Call sub-log-output-router
-              -> Set Final Execution Status
-              -> Return Summary
-    -> false -> Stop Invalid Input
+Start / Trigger
+  -> Validate Root Input
+    -> true  -> Build Execution Context
+              -> Execute sub-csv-normalizer
+              -> Validate Normalized Targets
+                   -> true  -> Execute sub-target-validator
+                             -> Execute sub-channel-router
+                             -> Has Email Targets?
+                                  -> true  -> Execute sub-email-outreach
+                                  -> false -> Build Empty Email Result
+                             -> Has Form Targets?
+                                  -> true  -> Execute sub-form-outreach
+                                  -> false -> Build Empty Form Result
+                             -> Merge Outreach Results
+                             -> Execute sub-channel-result-updater
+                             -> Execute sub-kpi-aggregator
+                             -> Build Output Payload
+                             -> Execute sub-log-output-router
+                             -> Build Final Execution Summary
+                             -> Return Final Result
+                   -> false -> Stop Missing Normalized Targets
+    -> false -> Stop Missing Root Input
 ```
 
 ---
 
-## Error Workflow 設定
+## 実装上の注意
 
-この workflow には `error-handler` を Settings で紐づける。
+### 1. parent は orchestration に徹する
+変換ロジックや判定ロジックを parent に持ち込みすぎない。
+sub-workflow の責務を守る。
 
-### 理由
-- 実行失敗を共通処理に集約する
-- main workflow 内に通知ロジックを埋め込まない
-- validation error も Stop And Error 経由で収集できる
+### 2. child は `Accept all data` で受け始める
+初期実装時は柔軟性を優先し、後で schema を厳格化する。
 
----
+### 3. Execute Workflow は同期的に扱う
+parent が child の返却値を次段で使う前提にすると設計が単純になる。
 
-## Google Sheets に関する前提
+### 4. Stop And Error を入力境界で使う
+root input や normalized targets のような致命的欠損は早めに止める。
 
-MVP v1 では標準出力先を Google Sheets とする。
+### 5. 空結果を許容する
+email 対象なし、form 対象なしは正常系として扱う。
+空配列を返せるようにする。
 
-### 保存方針
-- `activity_logs` は Append Row
-- `channel_results` は Update Row または Append or Update Row
-- `kpi_snapshots` は Append or Update Row
-
-### 注意点
-- `Append or Update Row` を使う場合は match column を固定する
-- 非一意の列を match key にしない
-- ID列は文字列型の揺れを避ける
+### 6. excluded target の扱いを決める
+KPI 母数に含めるか、activity log に残すかを parent で統一する。
 
 ---
 
-## 実装順のおすすめ
+## 初期テストケース
 
-最初の parent workflow 実装順は以下。
+### テスト1: email のみ
+```json
+{
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "input_type": "json",
+  "targets": [
+    {
+      "company_name": "Example Inc.",
+      "email": "test@example.com",
+      "contact_name": "Yamada",
+      "channel_hint": "email",
+      "body_text": "本文"
+    }
+  ]
+}
+```
 
-1. Manual Trigger
-2. Set Input Payload
-3. Validate Entry Payload
-4. Stop Invalid Input
-5. Set Execution Context
-6. sub-csv-normalizer まで接続
-7. sub-target-validator まで接続
-8. sub-channel-router まで接続
-9. sub-email-outreach / sub-form-outreach の片方ずつ接続
-10. Merge と summary 作成
-11. KPI と output router 接続
-12. error-handler 紐づけ
+### 期待結果
+- email sub-workflow が実行される
+- form sub-workflow は空結果
+- output_status = success
+
+---
+
+### テスト2: form のみ
+```json
+{
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "input_type": "json",
+  "targets": [
+    {
+      "company_name": "Example Inc.",
+      "submit_url": "https://example.com/contact/submit",
+      "channel_hint": "form",
+      "form_payload": {
+        "name": "Yamada",
+        "message": "本文"
+      }
+    }
+  ]
+}
+```
+
+### 期待結果
+- form sub-workflow が実行される
+- email sub-workflow は空結果
+
+---
+
+### テスト3: mixed
+```json
+{
+  "customer_id": "cust_001",
+  "source_list_id": "sl_001",
+  "input_type": "json",
+  "targets": [
+    {
+      "company_name": "A Inc.",
+      "email": "a@example.com",
+      "channel_hint": "email",
+      "body_text": "本文A"
+    },
+    {
+      "company_name": "B Inc.",
+      "submit_url": "https://example.com/contact/submit",
+      "channel_hint": "form",
+      "form_payload": {
+        "name": "Yamada",
+        "message": "本文B"
+      }
+    }
+  ]
+}
+```
+
+### 期待結果
+- email / form の両方が実行される
+- channel_results が統合される
+- KPI が1 snapshot 生成される
+
+---
+
+### テスト4: 入力不足
+```json
+{
+  "customer_id": "cust_001"
+}
+```
+
+### 期待結果
+- `Stop Missing Root Input` で停止
 
 ---
 
 ## MVP v1 時点の割り切り
 
-- 最初は並列実行を狙わない
-- 初期は CSVダミーデータ中心で検証する
-- Webhook入口は parent workflow が安定してから有効化する
-- Google Sheets 出力は最低限のシートだけ先に作る
-- ログの完全性より end-to-end 成功を先に確認する
+- 並列 fan-out は行わない
+- retry orchestration は持たない
+- 顧客別 workflow 分岐は持たない
+- advanced scheduling は持たない
+- 入力ソースの自動判別は高度には行わない
+- Browser Use 連携は parent 本体には入れない
+- DB 永続化は標準では持たない
+
+---
+
+## error-handler 連携前提
+
+この parent workflow で `Stop And Error` により停止した場合、
+共通 `error-handler` が以下を拾える前提にする。
+
+- workflow_name
+- execution_id
+- failed_node
+- error_message
+- timestamp
+
+これにより、parent 側の境界エラーも共通運用で監視できる。
