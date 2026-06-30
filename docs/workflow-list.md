@@ -23,7 +23,7 @@
 
 | Workflow Name | Type | Responsibility | Priority | Notes |
 |---|---|---|---|---|
-| `main-ingest-and-run` | Parent | 全体オーケストレーション | High | parent workflow |
+| `main-ingest-and-run` | Parent | 全体オーケストレーション | High | parent workflow (JSON: `n8n/workflows/main-ingest-and-run.json`) |
 | `sub-csv-normalizer` | Sub | CSV/JSON入力の標準化 | High | 正規化担当 |
 | `sub-target-validator` | Sub | target妥当性判定 | High | `active` / `excluded` / `invalid` を付与 |
 | `sub-channel-router` | Sub | email/form/excluded振り分け | High | 分岐担当 (JSON: `n8n/workflows/sub-channel-router.json`) |
@@ -62,3 +62,17 @@
 - 新しい workflow を作る前にこの一覧へ追加する
 - Claude に workflow JSON を作らせるときは、この一覧の workflow name を source of truth にする
 - `WORKFLOW_NAME` と n8n 上の workflow 名は原則そろえる
+
+## JSON Import Guide
+
+`n8n/workflows/main-ingest-and-run.json` は、`sub-channel-router` の routing 結果を確認するための最小 parent test workflow です。
+
+n8n に import する際は、以下の点に注意してください。
+
+- import 後、`Execute sub-channel-router` ノードで child workflow の再選択が必要な場合があります。
+- 手動実行の流れ:
+  1. `sub-channel-router` を先に import / save
+  2. `main-ingest-and-run.json` を import
+  3. `Execute sub-channel-router` ノードを開いて child workflow を選び直す
+  4. Manual Trigger で実行
+  5. `Return Test Result` ノードで `email_targets`, `form_targets`, `excluded_targets` を確認

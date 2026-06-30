@@ -1,0 +1,116 @@
+{
+  "name": "main-ingest-and-run",
+  "active": false,
+  "nodes": [
+    {
+      "id": "p1-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "p2-build",
+      "name": "Build Test Targets",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300],
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"execution_id\": $execution.id,\n  \"targets\": [\n    {\n      \"target_id\": \"t_001\",\n      \"normalized_status\": \"active\",\n      \"validated_channel\": \"email\",\n      \"email\": \"test@example.com\"\n    },\n    {\n      \"target_id\": \"t_002\",\n      \"normalized_status\": \"active\",\n      \"validated_channel\": \"form\",\n      \"submit_url\": \"https://example.com/contact/submit\",\n      \"form_payload\": {\n        \"name\": \"Yamada\",\n        \"message\": \"本文\"\n      }\n    },\n    {\n      \"target_id\": \"t_003\",\n      \"normalized_status\": \"excluded\",\n      \"validated_channel\": null,\n      \"exclusion_reason\": \"explicitly_excluded\"\n    },\n    {\n      \"target_id\": \"t_004\",\n      \"normalized_status\": \"invalid\",\n      \"validated_channel\": null,\n      \"failure_reason\": \"no_supported_channel\"\n    }\n  ]\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "p3-execute",
+      "name": "Execute sub-channel-router",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [680, 300],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "sub-channel-router",
+          "mode": "list",
+          "cachedResultName": "sub-channel-router"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "p4-return",
+      "name": "Return Test Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 300],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ra1",
+              "name": "email_targets",
+              "type": "array",
+              "value": "={{ $json.email_targets }}"
+            },
+            {
+              "id": "ra2",
+              "name": "form_targets",
+              "type": "array",
+              "value": "={{ $json.form_targets }}"
+            },
+            {
+              "id": "ra3",
+              "name": "excluded_targets",
+              "type": "array",
+              "value": "={{ $json.excluded_targets }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Test Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Test Targets": {
+      "main": [
+        [
+          {
+            "node": "Execute sub-channel-router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute sub-channel-router": {
+      "main": [
+        [
+          {
+            "node": "Return Test Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
