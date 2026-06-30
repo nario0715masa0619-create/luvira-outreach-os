@@ -1,0 +1,56 @@
+{
+  "name": "sub-channel-router",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c1f71a93-55d8-4f80-87a3-5c2be6df4a54",
+      "name": "Execute Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const first = $input.first();\nconst targets = first?.json?.targets;\n\nif (!Array.isArray(targets) || targets.length === 0) {\n  throw new Error('sub-channel-router: targets is missing or empty.');\n}\n\nconst email_targets = [];\nconst form_targets = [];\nconst excluded_targets = [];\n\nfor (const t of targets) {\n  if (t.normalized_status === 'active' && t.validated_channel === 'email') {\n    email_targets.push(t);\n  } else if (t.normalized_status === 'active' && t.validated_channel === 'form') {\n    form_targets.push(t);\n  } else {\n    excluded_targets.push(t);\n  }\n}\n\nreturn [\n  {\n    json: {\n      email_targets,\n      form_targets,\n      excluded_targets\n    }\n  }\n];"
+      },
+      "id": "e4f8ab90-1c88-4392-ae31-3de78d6b9d62",
+      "name": "Route Targets By Channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Route Targets By Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "tags": [
+    {
+      "name": "luvira-outreach-os"
+    },
+    {
+      "name": "sub"
+    },
+    {
+      "name": "routing"
+    }
+  ]
+}

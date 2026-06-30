@@ -26,7 +26,7 @@
 | `main-ingest-and-run` | Parent | 全体オーケストレーション | High | parent workflow |
 | `sub-csv-normalizer` | Sub | CSV/JSON入力の標準化 | High | 正規化担当 |
 | `sub-target-validator` | Sub | target妥当性判定 | High | `active` / `excluded` / `invalid` を付与 |
-| `sub-channel-router` | Sub | email/form/excluded振り分け | High | 分岐担当 |
+| `sub-channel-router` | Sub | email/form/excluded振り分け | High | 分岐担当 (JSON: `n8n/workflows/sub-channel-router.json`) |
 | `sub-email-outreach` | Sub | email送信 | Medium | 初期はダミーでも可 |
 | `sub-form-outreach` | Sub | フォーム送信 | Medium | 後で Browser Use 連携余地あり |
 | `sub-channel-result-updater` | Sub | 実行結果整形 | Medium | 集計前の整形 |

@@ -19,6 +19,10 @@ workflow の一覧および詳細な管理方針については、[Workflow List
 - `sub-*`: 単機能部品として再利用される子 workflow
 - `error-*`: 共通のエラー処理を担当する workflow
 
+**実装JSONの管理:**
+n8n インポート用の workflow JSON ファイルは `n8n/workflows/` ディレクトリに保存します。
+- サンプルとして最初の sub-workflow である `sub-channel-router.json` が配置されています。
+
 ---
 
 ## 目的
