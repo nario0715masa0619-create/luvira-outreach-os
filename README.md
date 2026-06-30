@@ -6,6 +6,21 @@ Luvira Outreach OS は、n8n を中核にして営業実行、送信結果管理
 
 ---
 
+## Documentation
+
+- [Workflow List](docs/workflow-list.md)
+
+このプロジェクトでは、保守性、テスト容易性、再利用性を高めるために、n8n workflow を「親 (parent)」と「子 (sub)」のモジュールに分割して管理します。
+巨大な workflow を作らず、責務ごとに小さな workflow へ分割します。
+workflow の一覧および詳細な管理方針については、[Workflow List](docs/workflow-list.md) を参照してください。
+
+**命名規則:**
+- `main-*`: 全体のオーケストレーションを担当する親 workflow
+- `sub-*`: 単機能部品として再利用される子 workflow
+- `error-*`: 共通のエラー処理を担当する workflow
+
+---
+
 ## 目的
 
 このプロジェクトの目的は以下の3つです。
