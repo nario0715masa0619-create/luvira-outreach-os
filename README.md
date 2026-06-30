@@ -1,49 +1,150 @@
-# Luvira Outreach OS
+# luvira-outreach-os
 
-## Overview
-Luvira Outreach OSは、企業が自社で保有するn8n環境に導入可能な「営業自動化OS」です。
-単なる自動化ツールの提供ではなく、共通のベストプラクティスに基づいたワークフロー群（共通OS）と、顧客ごとの個別要件を吸収する設定レイヤーを組み合わせた半プロダクト型サービスです。
-Luviraは導入支援、初期設定、テンプレート実装、そして継続的な運用支援までをワンストップで提供します。
+Luvira Outreach OS は、n8n を中核にして営業実行、送信結果管理、KPI 集計を標準化するためのアウトリーチ自動化基盤です。
 
-## Value Proposition
-- **資産の内製化:** 顧客自身のn8n環境に構築するため、データやワークフローが顧客の資産として残ります。
-- **早期立ち上げ:** 汎用化された「共通OS」を活用することで、ゼロからの受託開発に比べ圧倒的に短期間で高品質な営業自動化を実現します。
-- **データドリブンな改善:** フォーム営業・メール営業の実行結果から適合性や成功率を可視化し、属人的になりがちな営業活動を定量的なKPIに基づいて改善できます。
+このリポジトリでは、MVP v1 の設計ドキュメント、workflow 分割方針、入出力スキーマ、運用前提を管理します。
 
-## Standard Features
-- **CSVリスト取込:** 多様なフォーマットの営業リスト（CSV）を取り込み、内部で標準データモデルに正規化します。
-- **チャネルルーティング:** 顧客の属性やリストの特性に応じて、メール営業・フォーム営業・またはその両方への最適な振り分けを自動で実行します。
-- **ログ管理:** 全てのアクティビティと実行結果を一元的にログ化し、分析可能な状態を維持します。
-- **KPIレポート:** リストの適合性や各チャネルごとの実行成功率など、営業活動の成果を可視化するレポート基盤を提供します。
+---
 
-## Delivery Model
-本プロジェクトは以下のモデルで提供されます。
-1. **導入支援・要件定義:** 既存の営業プロセスのヒアリングと、自動化スコープの策定。
-2. **初期構築 (OS導入):** 顧客のn8n環境へのLuvira Outreach OSのデプロイおよび初期設定。
-3. **テンプレート実装:** 企業ごとの商材に合わせたメール文面・フォーム入力内容のテンプレート化。
-4. **運用支援・改善:** 定期的なKPIレポートの共有と、文面・リスト抽出条件などの改善提案。
+## 目的
 
-## KPI Visibility
-Luvira Outreach OSの最大の特徴は、実行して終わりではなく「結果を可視化する」点にあります。
-フォーム営業とメール営業のそれぞれにおいて、「リスト適合性（ターゲットとして適切であったか）」と「実行成功率（送信や入力が正常に完了したか）」を明確に分離して計測し、ボトルネックの特定を容易にします。
+このプロジェクトの目的は以下の3つです。
 
-## Repository Structure
+- 営業自動化の標準MVPを定義する
+- n8n workflow を保守しやすい単位で分割する
+- Google Sheets を標準出力先とした運用可能な基盤を整える
+
+---
+
+## スコープ
+
+MVP v1 では以下を標準範囲とします。
+
+- CSV または Webhook 起点の target 取込
+- target 正規化
+- target 妥当性判定
+- email / form のチャネル分岐
+- email 送信
+- form 送信
+- channel result 更新
+- KPI 集計
+- Google Sheets への標準出力
+
+MVP v1 では以下は原則スコープ外です。
+
+- 高度なパーソナライズ生成
+- 開封率、返信率、商談化率の追跡
+- multi-step form 完全対応
+- CAPTCHA 対応
+- 顧客別の高度な routing ルール
+- DB、BigQuery、Notion など複数出力先対応
+
+---
+
+## アーキテクチャ
+
+workflow は parent workflow 1 本と複数の sub-workflow に分割します。
+
+### parent workflow
+- `main-ingest-and-run`
+
+### sub-workflows
+- `sub-csv-normalizer`
+- `sub-target-validator`
+- `sub-channel-router`
+- `sub-email-outreach`
+- `sub-form-outreach`
+- `sub-channel-result-updater`
+- `sub-kpi-aggregator`
+- `sub-log-output-router`
+
+---
+
+## workflow 一覧
+
+| Workflow | 役割 |
+|---|---|
+| `main-ingest-and-run` | 全体のオーケストレーション |
+| `sub-csv-normalizer` | CSV / row の標準 schema 化 |
+| `sub-target-validator` | 実行対象可否判定 |
+| `sub-channel-router` | email / form / excluded への振り分け |
+| `sub-email-outreach` | email 送信処理 |
+| `sub-form-outreach` | form 送信処理 |
+| `sub-channel-result-updater` | latest channel result 更新 |
+| `sub-kpi-aggregator` | execution 単位 KPI 集計 |
+| `sub-log-output-router` | Google Sheets への標準出力 |
+
+---
+
+## データフロー
+
+```text
+main-ingest-and-run
+  -> sub-csv-normalizer
+  -> sub-target-validator
+  -> sub-channel-router
+     -> sub-email-outreach
+     -> sub-form-outreach
+  -> sub-channel-result-updater
+  -> sub-kpi-aggregator
+  -> sub-log-output-router
 ```
+
+---
+
+## 標準出力先
+
+MVP v1 の標準出力先は Google Sheets とします。
+
+### 想定シート
+- `activity_logs`
+- `channel_results_latest`
+- `kpi_snapshots`
+
+---
+
+## ディレクトリ構成
+
+```text
 luvira-outreach-os/
 ├── README.md
-├── docs/                   # ドキュメントディレクトリ
-│   ├── service-scope.md    # 提供スコープ・責任分界点
-│   ├── kpi-design.md       # KPI定義とレポート構成
-│   └── architecture.md     # システムアーキテクチャ設計
-├── src/                    # n8nワークフロー定義 (JSON等)
-│   ├── workflows/          # 親ワークフロー
-│   └── sub-workflows/      # 共通化されたサブワークフロー
-└── templates/              # 各種設定や文面のテンプレート
+└── docs/
+    ├── index.md
+    ├── mvp-v1.md
+    ├── workflow-json-mock-v1.md
+    ├── main-ingest-and-run.md
+    ├── sub-csv-normalizer.md
+    ├── sub-target-validator.md
+    ├── sub-channel-router.md
+    ├── sub-email-outreach.md
+    ├── sub-form-outreach.md
+    ├── sub-channel-result-updater.md
+    ├── sub-kpi-aggregator.md
+    └── sub-log-output-router.md
 ```
 
-## Roadmap
-- [x] OS基本アーキテクチャおよび共通ワークフロー群の設計
-- [ ] 標準KPIレポートダッシュボード（Looker Studio等）のテンプレート化
-- [ ] AI文面生成オプションの開発（LLM連携）
-- [ ] Browser Use連携による動的フォーム突破機能のオプション化
-- [ ] LinkedIn等の追加チャネルへの拡張
+---
+
+## 今後の実装順
+
+実装は以下の順で進めます。
+
+1. `main-ingest-and-run`
+2. `sub-csv-normalizer`
+3. `sub-target-validator`
+4. `sub-channel-router`
+5. `sub-email-outreach`
+6. `sub-form-outreach`
+7. `sub-channel-result-updater`
+8. `sub-kpi-aggregator`
+9. `sub-log-output-router`
+
+---
+
+## 運用ルール
+
+- 各 workflow は 1 つの責務に絞る
+- 入出力 schema は docs に先に書く
+- Google Sheets の列は docs に固定してから実装する
+- parent workflow は orchestration に徹する
+- 送信実行と集計、保存を混在させない
